@@ -1,13 +1,13 @@
 import os
 import uuid
 from flask import Flask, request, jsonify, send_from_directory
-
-# AI és videófeldolgozó könyvtárak
 import yt_dlp
-import whisper
 import google.generativeai as genai
 import ffmpeg
+from speechmatics.models import ConnectionSettings
+from speechmatics.batch_client import BatchClient
 
+# Gemini prompt
 TRANSLATE_PROMPT_TEMPLATE = """
 Feladat: Fordítsd le a megadott SRT feliratot magyarra.
 A formátumot és az időbélyegeket pontosan tartsd meg, csak a szöveget fordítsd.
@@ -22,71 +22,68 @@ Eredeti SRT felirat:
 """
 
 app = Flask(__name__)
-TMP_DIR = "/tmp" 
-
-WHISPER_CACHE_PATH = os.environ.get("WHISPER_HOME", "/app/.cache/whisper")
-print("Whisper modell betöltése...")
-whisper_model = whisper.load_model("base", download_root=WHISPER_CACHE_PATH)
-print("Whisper modell betöltve.")
-
-def format_time(seconds):
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    millis = int((seconds - int(seconds)) * 1000)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+TMP_DIR = "/tmp"
 
 @app.route('/process-video', methods=['POST'])
 def process_video():
     data = request.get_json()
     video_url = data.get('url')
-    api_key = data.get('apiKey') 
+    speechmatics_api_key = data.get('speechmaticsApiKey')
+    gemini_api_key = data.get('geminiApiKey')
 
-    if not video_url or not api_key:
-        return jsonify({"error": "Hiányzó videó URL vagy API kulcs"}), 400
-
+    if not all([video_url, speechmatics_api_key, gemini_api_key]):
+        return jsonify({"error": "Hiányzó adatok"}), 400
+    
     unique_id = str(uuid.uuid4())
-    audio_path = os.path.join(TMP_DIR, f"{unique_id}.m4a")
-    original_srt_path = os.path.join(TMP_DIR, f"{unique_id}_orig.srt")
     translated_srt_path = os.path.join(TMP_DIR, f"{unique_id}_translated.srt")
     video_path = os.path.join(TMP_DIR, f"{unique_id}_video.mp4")
     output_video_path = os.path.join(TMP_DIR, f"{unique_id}_output.mp4")
-
+    
     try:
-        # 1. Hang letöltése
-        ydl_opts = {'format': 'bestaudio[ext=m4a]/bestaudio', 'outtmpl': audio_path, 'quiet': True}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([video_url])
+        # 1. Lépés: Link és nyelv kinyerése
+        with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+            direct_url = info['url']
+            language = info.get('language', 'auto')
+            video_title = info.get('title', 'video')
+            safe_filename = "".join([c for c in video_title if c.isalpha() or c.isdigit() or c==' ']).rstrip() + ".mp4"
 
-        # 2. Transzkripció
-        transcribe_result = whisper_model.transcribe(audio_path, language="en", fp16=False)
-        with open(original_srt_path, "w", encoding="utf-8") as f:
-            for i, segment in enumerate(transcribe_result["segments"]):
-                start_time = format_time(segment['start'])
-                end_time = format_time(segment['end'])
-                text = segment['text'].strip()
-                f.write(f"{i + 1}\n{start_time} --> {end_time}\n{text}\n\n")
+        # 2. Lépés: Átirat kérése a Speechmatics API-tól
+        settings = ConnectionSettings(
+            url="https://asr.api.speechmatics.com/v2",
+            auth_token=speechmatics_api_key,
+        )
         
-        with open(original_srt_path, "r", encoding="utf-8") as f:
-            original_srt_content = f.read()
+        with BatchClient(settings) as client:
+            conf = {
+                "type": "transcription",
+                "transcription_config": {
+                    "language": language,
+                    "output_format": "srt"
+                },
+                "fetch_data": {
+                    "url": direct_url
+                }
+            }
+            job_id = client.submit_job(conf)
+            print(f"Speechmatics job elküldve, ID: {job_id}")
+            original_srt_content = client.get_job_result(job_id, timeout=900)
 
-        # 3. Fordítás (Google Gemini)
-        genai.configure(api_key=api_key)
+        # 3. Lépés: Fordítás a Geminivel
+        genai.configure(api_key=gemini_api_key)
         model = genai.GenerativeModel('gemini-1.5-flash')
         final_prompt = TRANSLATE_PROMPT_TEMPLATE.format(srt_content=original_srt_content)
         
-        response = model.generate_content(final_prompt)
-        translated_srt_content = response.text
+        gemini_response = model.generate_content(final_prompt)
+        translated_srt_content = gemini_response.text
         
         with open(translated_srt_path, "w", encoding="utf-8") as f:
             f.write(translated_srt_content)
 
-        # 4. Felirat ráégetése
+        # 4. Lépés: Felirat ráégetése
         ydl_opts_video = {'format': 'best[ext=mp4]/best', 'outtmpl': video_path, 'quiet': True}
         with yt_dlp.YoutubeDL(ydl_opts_video) as ydl:
-            info = ydl.extract_info(video_url, download=True)
-            video_title = info.get('title', 'video')
-            safe_filename = "".join([c for c in video_title if c.isalpha() or c.isdigit() or c==' ']).rstrip() + ".mp4"
+            ydl.download([video_url])
 
         (
             ffmpeg
@@ -108,7 +105,6 @@ def process_video():
         return jsonify({"error": str(e)}), 500
     finally:
         # Takarítás
-        for f in [audio_path, original_srt_path, translated_srt_path, video_path, output_video_path]:
+        for f in [translated_srt_path, video_path, output_video_path]:
             if f and os.path.exists(f):
                 os.remove(f)
-
