@@ -7,10 +7,6 @@ import ffmpeg
 from speechmatics.models import ConnectionSettings
 from speechmatics.batch_client import BatchClient
 
-# A Gemini prompt változatlan...
-# ...
-
-
 # Gemini prompt
 TRANSLATE_PROMPT_TEMPLATE = """
 Feladat: Fordítsd le a megadott SRT feliratot magyarra.
@@ -28,10 +24,8 @@ Eredeti SRT felirat:
 app = Flask(__name__)
 TMP_DIR = "/tmp"
 
-# Új útvonal a főoldal kiszolgálására
 @app.route('/')
 def index():
-    # Az aktuális mappából ('./') kiszolgálja az 'index.html' fájlt
     return send_from_directory('.', 'index.html')
 
 @app.route('/process-video', methods=['POST'])
@@ -65,17 +59,20 @@ def process_video():
         )
         
         with BatchClient(settings) as client:
-            conf = {
-                "type": "transcription",
-                "transcription_config": {
-                    "language": language,
-                    "output_format": "srt"
-                },
-                "fetch_data": {
-                    "url": direct_url
-                }
+            # JAVÍTVA: A konfigurációt külön szótárakba bontjuk
+            transcription_config = {
+                "language": language,
+                "output_format": "srt"
             }
-            job_id = client.submit_job(conf)
+            fetch_config = {
+                "url": direct_url
+            }
+
+            job_id = client.submit_job(
+                fetch_config=fetch_config,
+                transcription_config=transcription_config
+            )
+
             print(f"Speechmatics job elküldve, ID: {job_id}")
             original_srt_content = client.get_job_result(job_id, timeout=900)
 
@@ -118,3 +115,4 @@ def process_video():
         for f in [translated_srt_path, video_path, output_video_path]:
             if f and os.path.exists(f):
                 os.remove(f)
+
