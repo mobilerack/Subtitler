@@ -59,17 +59,17 @@ def process_video():
         )
         
         with BatchClient(settings) as client:
-            # JAVÍTVA: A konfigurációt külön szótárakba bontjuk
+            # JAVÍTVA: A helyes argumentumnév használata
             transcription_config = {
                 "language": language,
                 "output_format": "srt"
             }
-            fetch_config = {
+            fetch_data = {
                 "url": direct_url
             }
 
             job_id = client.submit_job(
-                fetch_config=fetch_config,
+                fetch_data=fetch_data,
                 transcription_config=transcription_config
             )
 
@@ -115,4 +115,3 @@ def process_video():
         for f in [translated_srt_path, video_path, output_video_path]:
             if f and os.path.exists(f):
                 os.remove(f)
-
