@@ -1,11 +1,11 @@
 import os
 import uuid
+import time
+import requests
 from flask import Flask, request, jsonify, send_from_directory
 import yt_dlp
 import google.generativeai as genai
 import ffmpeg
-from speechmatics.models import ConnectionSettings
-from speechmatics.batch_client import BatchClient
 
 # Gemini prompt
 TRANSLATE_PROMPT_TEMPLATE = """
@@ -28,6 +28,41 @@ TMP_DIR = "/tmp"
 def index():
     return send_from_directory('.', 'index.html')
 
+def get_speechmatics_srt(api_key, media_url, language_code):
+    """Közvetlen API hívás a Speechmatics-hez a leiratért."""
+    
+    # 1. Job elküldése
+    headers = {"Authorization": f"Bearer {api_key}"}
+    config = {
+        "type": "transcription",
+        "fetch_data": {"url": media_url},
+        "transcription_config": {"language": language_code}
+    }
+    
+    print("Speechmatics job indítása...")
+    response = requests.post("https://asr.api.speechmatics.com/v2/jobs/", headers=headers, json=config)
+    response.raise_for_status()
+    job_id = response.json()['id']
+    print(f"Speechmatics job elküldve, ID: {job_id}")
+
+    # 2. Várakozás a 'done' státuszra (polling)
+    while True:
+        status_response = requests.get(f"https://asr.api.speechmatics.com/v2/jobs/{job_id}", headers=headers)
+        status_response.raise_for_status()
+        job_status = status_response.json()['job']['status']
+        print(f"Job státusz: {job_status}")
+        if job_status == "done":
+            break
+        if job_status == "rejected":
+            raise Exception("Speechmatics job elutasítva.")
+        time.sleep(10) # 10 másodpercet várunk a következő ellenőrzés előtt
+
+    # 3. Az SRT felirat lekérése
+    print("SRT felirat lekérése...")
+    srt_response = requests.get(f"https://asr.api.speechmatics.com/v2/jobs/{job_id}/transcript?format=srt", headers=headers)
+    srt_response.raise_for_status()
+    return srt_response.text
+
 @app.route('/process-video', methods=['POST'])
 def process_video():
     data = request.get_json()
@@ -38,6 +73,7 @@ def process_video():
     if not all([video_url, speechmatics_api_key, gemini_api_key]):
         return jsonify({"error": "Hiányzó adatok"}), 400
     
+    # Fájlnevek definiálása
     unique_id = str(uuid.uuid4())
     translated_srt_path = os.path.join(TMP_DIR, f"{unique_id}_translated.srt")
     video_path = os.path.join(TMP_DIR, f"{unique_id}_video.mp4")
@@ -52,42 +88,20 @@ def process_video():
             video_title = info.get('title', 'video')
             safe_filename = "".join([c for c in video_title if c.isalpha() or c.isdigit() or c==' ']).rstrip() + ".mp4"
 
-        # 2. Lépés: Átirat kérése a Speechmatics API-tól
-        settings = ConnectionSettings(
-            url="https://asr.api.speechmatics.com/v2",
-            auth_token=speechmatics_api_key,
-        )
-        
-        with BatchClient(settings) as client:
-            # JAVÍTVA: A helyes argumentumnév használata
-            transcription_config = {
-                "language": language,
-                "output_format": "srt"
-            }
-            fetch_data = {
-                "url": direct_url
-            }
+        # 2. Lépés: Átirat kérése a Speechmatics-től a fenti segédfüggvénnyel
+        original_srt_content = get_speechmatics_srt(speechmatics_api_key, direct_url, language)
 
-            job_id = client.submit_job(
-                fetch_data=fetch_data,
-                transcription_config=transcription_config
-            )
-
-            print(f"Speechmatics job elküldve, ID: {job_id}")
-            original_srt_content = client.get_job_result(job_id, timeout=900)
-
-        # 3. Lépés: Fordítás a Geminivel
+        # 3. Lépés: Fordítás a Geminivel (változatlan)
         genai.configure(api_key=gemini_api_key)
         model = genai.GenerativeModel('gemini-1.5-flash')
         final_prompt = TRANSLATE_PROMPT_TEMPLATE.format(srt_content=original_srt_content)
-        
         gemini_response = model.generate_content(final_prompt)
         translated_srt_content = gemini_response.text
         
         with open(translated_srt_path, "w", encoding="utf-8") as f:
             f.write(translated_srt_content)
 
-        # 4. Lépés: Felirat ráégetése
+        # 4. Lépés: Felirat ráégetése (változatlan)
         ydl_opts_video = {'format': 'best[ext=mp4]/best', 'outtmpl': video_path, 'quiet': True}
         with yt_dlp.YoutubeDL(ydl_opts_video) as ydl:
             ydl.download([video_url])
