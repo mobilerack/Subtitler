@@ -26,6 +26,5 @@ USER appuser
 # 8. Alkalmazás kódjának másolása
 COPY . .
 
-# 9. Konténer futtatási parancsa
-CMD ["gunicorn", "--bind", "0.0.0.0:${PORT}", "--workers", "1", "--threads", "8", "--timeout", "0", "app:app"]
-
+# 9. Konténer futtatási parancsa (JAVÍTVA)
+CMD gunicorn --bind 0.0.0.0:${PORT} --workers 1 --threads 8 --timeout 0 app:app
