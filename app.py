@@ -30,8 +30,6 @@ def index():
 
 def get_speechmatics_srt(api_key, media_url, language_code):
     """Közvetlen API hívás a Speechmatics-hez a leiratért."""
-    
-    # 1. Job elküldése
     headers = {"Authorization": f"Bearer {api_key}"}
     config = {
         "type": "transcription",
@@ -39,13 +37,12 @@ def get_speechmatics_srt(api_key, media_url, language_code):
         "transcription_config": {"language": language_code}
     }
     
-    print("Speechmatics job indítása...")
+    print(f"Speechmatics job indítása a következővel: language='{language_code}'")
     response = requests.post("https://asr.api.speechmatics.com/v2/jobs/", headers=headers, json=config)
     response.raise_for_status()
     job_id = response.json()['id']
     print(f"Speechmatics job elküldve, ID: {job_id}")
 
-    # 2. Várakozás a 'done' státuszra (polling)
     while True:
         status_response = requests.get(f"https://asr.api.speechmatics.com/v2/jobs/{job_id}", headers=headers)
         status_response.raise_for_status()
@@ -55,9 +52,8 @@ def get_speechmatics_srt(api_key, media_url, language_code):
             break
         if job_status == "rejected":
             raise Exception("Speechmatics job elutasítva.")
-        time.sleep(10) # 10 másodpercet várunk a következő ellenőrzés előtt
+        time.sleep(10)
 
-    # 3. Az SRT felirat lekérése
     print("SRT felirat lekérése...")
     srt_response = requests.get(f"https://asr.api.speechmatics.com/v2/jobs/{job_id}/transcript?format=srt", headers=headers)
     srt_response.raise_for_status()
@@ -69,26 +65,25 @@ def process_video():
     video_url = data.get('url')
     speechmatics_api_key = data.get('speechmaticsApiKey')
     gemini_api_key = data.get('geminiApiKey')
+    language = data.get('language', 'en') # Fogadjuk a nyelvet a frontendtől
 
-    if not all([video_url, speechmatics_api_key, gemini_api_key]):
+    if not all([video_url, speechmatics_api_key, gemini_api_key, language]):
         return jsonify({"error": "Hiányzó adatok"}), 400
     
-    # Fájlnevek definiálása
     unique_id = str(uuid.uuid4())
     translated_srt_path = os.path.join(TMP_DIR, f"{unique_id}_translated.srt")
     video_path = os.path.join(TMP_DIR, f"{unique_id}_video.mp4")
     output_video_path = os.path.join(TMP_DIR, f"{unique_id}_output.mp4")
     
     try:
-        # 1. Lépés: Link és nyelv kinyerése
+        # 1. Lépés: Link és cím kinyerése (nyelv kinyerése már nem kell)
         with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
             info = ydl.extract_info(video_url, download=False)
             direct_url = info['url']
-            language = info.get('language', 'auto')
             video_title = info.get('title', 'video')
             safe_filename = "".join([c for c in video_title if c.isalpha() or c.isdigit() or c==' ']).rstrip() + ".mp4"
 
-        # 2. Lépés: Átirat kérése a Speechmatics-től a fenti segédfüggvénnyel
+        # 2. Lépés: Átirat kérése a KIVÁLASZTOTT nyelvvel
         original_srt_content = get_speechmatics_srt(speechmatics_api_key, direct_url, language)
 
         # 3. Lépés: Fordítás a Geminivel (változatlan)
@@ -129,3 +124,4 @@ def process_video():
         for f in [translated_srt_path, video_path, output_video_path]:
             if f and os.path.exists(f):
                 os.remove(f)
+
