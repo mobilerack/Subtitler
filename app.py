@@ -7,6 +7,10 @@ import ffmpeg
 from speechmatics.models import ConnectionSettings
 from speechmatics.batch_client import BatchClient
 
+# A Gemini prompt változatlan...
+# ...
+
+
 # Gemini prompt
 TRANSLATE_PROMPT_TEMPLATE = """
 Feladat: Fordítsd le a megadott SRT feliratot magyarra.
