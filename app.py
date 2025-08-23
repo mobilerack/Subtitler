@@ -28,6 +28,12 @@ Eredeti SRT felirat:
 app = Flask(__name__)
 TMP_DIR = "/tmp"
 
+# Új útvonal a főoldal kiszolgálására
+@app.route('/')
+def index():
+    # Az aktuális mappából ('./') kiszolgálja az 'index.html' fájlt
+    return send_from_directory('.', 'index.html')
+
 @app.route('/process-video', methods=['POST'])
 def process_video():
     data = request.get_json()
