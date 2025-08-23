@@ -13,7 +13,7 @@ TRANSLATE_PROMPT_TEMPLATE = """
 Feladat: Fordítsd le a megadott SRT feliratot magyarra.
 A formátumot és az időbélyegeket pontosan tartsd meg, csak a szöveget fordítsd.
 
-Stílus: A fordítás legyen gördükeny, természetes, és illeszkedjen a videó kontextusához.
+Stílus: A fordítás legyen gördülékeny, természetes, és illeszkedjen a videó kontextusához.
 Használj bátran szleng szótárat, valamint trágár kifejezéseket. Ne szó szerint fordíts!
 
 Eredeti SRT felirat:
@@ -30,13 +30,10 @@ def index():
     return send_from_directory('.', 'index.html')
 
 def get_speechmatics_srt(api_key, audio_file_path, language_code):
-    """
-    Hangfájl közvetlen feltöltése a Speechmatics-hez és a leirat lekérése.
-    """
+    """Hangfájl közvetlen feltöltése a Speechmatics-hez és a leirat lekérése."""
     url = "https://asr.api.speechmatics.com/v2/jobs/"
     headers = {"Authorization": f"Bearer {api_key}"}
     
-    # 1. Job konfigurációjának összeállítása
     config = {
         "type": "transcription",
         "transcription_config": {
@@ -45,7 +42,6 @@ def get_speechmatics_srt(api_key, audio_file_path, language_code):
         }
     }
     
-    # 2. A kérés összeállítása: a 'files' paraméterrel küldünk több részes (multipart) formátumot
     files = {
         'config': (None, json.dumps(config), 'application/json'),
         'data_file': (os.path.basename(audio_file_path), open(audio_file_path, 'rb'), 'audio/mpeg')
@@ -57,7 +53,6 @@ def get_speechmatics_srt(api_key, audio_file_path, language_code):
     job_id = response.json()['id']
     print(f"Speechmatics job elküldve, ID: {job_id}")
 
-    # 3. Várakozás a 'done' státuszra (polling)
     while True:
         status_response = requests.get(f"{url}{job_id}", headers=headers)
         status_response.raise_for_status()
@@ -69,7 +64,6 @@ def get_speechmatics_srt(api_key, audio_file_path, language_code):
             raise Exception(f"Speechmatics job sikertelen: {status_response.json()}")
         time.sleep(10)
 
-    # 4. Az SRT felirat lekérése
     print("SRT felirat lekérése...")
     srt_response = requests.get(f"{url}{job_id}/transcript?format=srt", headers=headers)
     srt_response.raise_for_status()
@@ -87,17 +81,25 @@ def process_video():
         return jsonify({"error": "Hiányzó adatok"}), 400
     
     unique_id = str(uuid.uuid4())
-    audio_path = os.path.join(TMP_DIR, f"{unique_id}.m4a")
+    # A kiterjesztés nélküli alapnév, a yt-dlp majd hozzáteszi a megfelelőt.
+    audio_base_path = os.path.join(TMP_DIR, f"{unique_id}_audio")
+    audio_path_final = audio_base_path + ".m4a" # A végleges fájl, amit a Speechmatics-nek adunk
+    
     translated_srt_path = os.path.join(TMP_DIR, f"{unique_id}_translated.srt")
     video_path = os.path.join(TMP_DIR, f"{unique_id}_video.mp4")
     output_video_path = os.path.join(TMP_DIR, f"{unique_id}_output.mp4")
     
     try:
-        # 1. Lépés: Most már a hangfájlt is letöltjük
+        # 1. Lépés: Hang letöltése és konvertálása m4a formátumra
         ydl_opts_audio = {
-            'format': 'bestaudio[ext=m4a]/bestaudio',
-            'outtmpl': audio_path,
-            'quiet': True
+            'format': 'bestaudio/best',
+            'outtmpl': audio_base_path,
+            'quiet': True,
+            # Utófeldolgozó, ami garantálja az m4a kimenetet
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'm4a',
+            }],
         }
         with yt_dlp.YoutubeDL(ydl_opts_audio) as ydl:
             info = ydl.extract_info(video_url, download=True)
@@ -105,7 +107,7 @@ def process_video():
             safe_filename = "".join([c for c in video_title if c.isalpha() or c.isdigit() or c==' ']).rstrip() + ".mp4"
 
         # 2. Lépés: Átirat kérése a LETÖLTÖTT hangfájllal
-        original_srt_content = get_speechmatics_srt(speechmatics_api_key, audio_path, language)
+        original_srt_content = get_speechmatics_srt(speechmatics_api_key, audio_path_final, language)
 
         # 3. Lépés: Fordítás a Geminivel
         genai.configure(api_key=gemini_api_key)
@@ -118,7 +120,12 @@ def process_video():
             f.write(translated_srt_content)
 
         # 4. Lépés: A videó letöltése és a felirat ráégetése
-        ydl_opts_video = {'format': 'best[ext=mp4]/best', 'outtmpl': video_path, 'quiet': True}
+        # JAVÍTVA: Rugalmasabb formátumválasztó
+        ydl_opts_video = {
+            'format': 'bestvideo+bestaudio/best',
+            'outtmpl': video_path,
+            'quiet': True,
+        }
         with yt_dlp.YoutubeDL(ydl_opts_video) as ydl:
             ydl.download([video_url])
 
@@ -142,7 +149,7 @@ def process_video():
         return jsonify({"error": str(e)}), 500
     finally:
         # Takarítás
-        for f in [audio_path, translated_srt_path, video_path, output_video_path]:
+        for f in [audio_path_final, translated_srt_path, video_path, output_video_path]:
             if f and os.path.exists(f):
                 os.remove(f)
 
