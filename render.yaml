@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: video-feliratozo
+    env: docker
+    plan: standard
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
+    healthCheckPath: / # Adjunk hozzá egy alapvető health check útvonalat
+    dockerfilePath: ./Dockerfile
+    disk:
+      name: temp-storage
+      mountPath: /tmp
+      sizeGB: 5
