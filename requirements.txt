@@ -4,6 +4,3 @@ google-generativeai
 gunicorn
 ffmpeg-python
 requests
-speechmatics-python
-httpx
-boto3
