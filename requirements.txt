@@ -1,7 +1,5 @@
 Flask
-yt_dlp
+yt-dlp
 google-generativeai
 gunicorn
 ffmpeg-python
-requests
-speechmatics-python
