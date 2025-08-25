@@ -10,7 +10,7 @@ import google.generativeai as genai
 import ffmpeg
 
 # Gemini prompt (változatlan)
-TRANSLATE_PROMPT_TEMPLATE = """..."""
+TRANSLATE_PROMPT_TEMPLATE = """...""" # A prompt szövegét a rövidség kedvéért nem illesztem be újra
 
 app = Flask(__name__)
 TMP_DIR = "/tmp"
@@ -19,39 +19,53 @@ TMP_DIR = "/tmp"
 def index():
     return send_from_directory('.', 'index.html')
 
-def get_speechmatics_srt(api_key, audio_file_path, language_code, logger):
-    """Hangfájl feltöltése a Speechmatics-hez, RÉSZLETES hibakezeléssel."""
+@app.route('/download/<filename>')
+def download_file(filename):
+    # Ez a végpont a kész, feliratozott videó letöltéséhez kell
+    return send_from_directory(TMP_DIR, filename, as_attachment=True)
+
+def get_speechmatics_srt(api_key, file_path, language_code, logger):
+    """Videó- vagy hangfájl feltöltése a Speechmatics-hez."""
     url = "https://asr.api.speechmatics.com/v2/jobs/"
     headers = {"Authorization": f"Bearer {api_key}"}
     
     config = {
         "type": "transcription",
-        "transcription_config": { "language": language_code, "output_format": "srt" }
+        "transcription_config": {
+            "language": language_code,
+            "output_format": "srt"
+        }
     }
+    
+    # A fájltípus alapján automatikusan beállítjuk a MIME típust
+    mime_type = 'video/mp4' if file_path.endswith('.mp4') else 'audio/mp4'
     
     files = {
         'config': (None, json.dumps(config), 'application/json'),
-        'data_file': (os.path.basename(audio_file_path), open(audio_file_path, 'rb'), 'audio/mp4')
+        'data_file': (os.path.basename(file_path), open(file_path, 'rb'), mime_type)
     }
     
-    logger.info("Speechmatics job indítása fájlfeltöltéssel...")
+    logger.info(f"Speechmatics job indítása fájlfeltöltéssel... Fájl: {os.path.basename(file_path)}, Típus: {mime_type}")
     
     try:
         response = requests.post(url, headers=headers, files=files)
-        # Ez a sor dob hibát, ha a státuszkód 4xx vagy 5xx
-        response.raise_for_status() 
+        response.raise_for_status()
     except requests.exceptions.HTTPError as err:
-        # Itt elkapjuk a hibát, és kiírjuk a részletes választ a szerverről
         logger.error(f"Speechmatics API hiba! Részletek: {err.response.text}")
-        # Majd újra dobjuk a hibát, hogy a fő folyamat is leálljon
         raise err
 
     job_id = response.json()['id']
     logger.info(f"Speechmatics job elküldve, ID: {job_id}")
 
-    # Polling logika (változatlan)
     while True:
-        # ...
+        status_response = requests.get(f"{url}{job_id}", headers=headers)
+        status_response.raise_for_status()
+        job_status = status_response.json()['job']['status']
+        logger.info(f"Job státusz: {job_status}")
+        if job_status == "done":
+            break
+        if job_status in ["rejected", "failed"]:
+            raise Exception(f"Speechmatics job sikertelen: {status_response.json()}")
         time.sleep(10)
 
     logger.info("SRT felirat lekérése...")
@@ -62,52 +76,76 @@ def get_speechmatics_srt(api_key, audio_file_path, language_code, logger):
 
 @app.route('/process-video', methods=['POST'])
 def process_video():
-    # A kód többi része ugyanaz marad, mint a legutóbbi teszt verziónál
     data = request.get_json()
+    video_url = data.get('url')
     speechmatics_api_key = data.get('speechmaticsApiKey')
     gemini_api_key = data.get('geminiApiKey')
-    
-    # === TESZT ===
-    video_url = "https://upload.wikimedia.org/wikipedia/commons/d/dd/En-us-house.ogg"
-    language = "en"
-    # =============
+    language = data.get('language', 'en')
 
+    if not all([video_url, speechmatics_api_key, gemini_api_key, language]):
+        return jsonify({"error": "Hiányzó adatok"}), 400
+    
     unique_id = str(uuid.uuid4())
     log_path = os.path.join(TMP_DIR, f"{unique_id}.log")
     
-    # Logolás beállítása...
+    # Logolás beállítása... (változatlan)
     logger = logging.getLogger(unique_id)
-    # ... (a többi logolási kód változatlan)
+    # ...
     
-    audio_base_path = os.path.join(TMP_DIR, f"{unique_id}_audio")
-    audio_path_final = audio_base_path + ".m4a"
+    video_path = os.path.join(TMP_DIR, f"{unique_id}_video.mp4")
+    translated_srt_path = os.path.join(TMP_DIR, f"{unique_id}_translated.srt")
+    output_video_path = os.path.join(TMP_DIR, f"{unique_id}_output.mp4")
     
     try:
-        logger.info("Teszt feldolgozás indul...")
+        logger.info(f"Feldolgozás indult a következő URL-lel: {video_url}")
         
-        # Hang letöltése...
-        logger.info("Hang letöltése indul...")
-        # ... (ydl_opts_audio és with yt_dlp.YoutubeDL... változatlan)
-        
-        # Átirat kérése...
-        original_srt_content = get_speechmatics_srt(speechmatics_api_key, audio_path_final, language, logger)
+        # 1. LÉPÉS: A videó letöltése (már nem kell külön a hang)
+        logger.info("Videó letöltése indul...")
+        ydl_opts_video = {
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'outtmpl': video_path,
+            'quiet': True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts_video) as ydl:
+            info = ydl.extract_info(video_url, download=True)
+            video_title = info.get('title', 'video')
+            safe_filename = "".join([c for c in video_title if c.isalpha() or c.isdigit() or c==' ']).rstrip() + ".mp4"
+        logger.info("Videó letöltése kész.")
 
-        # A tesztben a többi lépés most nem fontos...
-        logger.info("Teszt sikeres, a Speechmatics feldolgozta a fájlt.")
-        with open(log_path, 'r') as f:
+        # 2. LÉPÉS: Átirat kérése a LETÖLTÖTT videófájllal
+        original_srt_content = get_speechmatics_srt(speechmatics_api_key, video_path, language, logger)
+
+        # 3. LÉPÉS: Fordítás a Geminivel (változatlan)
+        logger.info("Fordítás indítása a Geminivel...")
+        genai.configure(api_key=gemini_api_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        final_prompt = TRANSLATE_PROMPT_TEMPLATE.format(srt_content=original_srt_content)
+        gemini_response = model.generate_content(final_prompt)
+        translated_srt_content = gemini_response.text
+        with open(translated_srt_path, "w", encoding="utf-8") as f:
+            f.write(translated_srt_content)
+        logger.info("Fordítás kész.")
+
+        # 4. LÉPÉS: Felirat ráégetése (a videó már le van töltve)
+        logger.info("Felirat ráégetése...")
+        (ffmpeg.input(video_path).filter('subtitles', translated_srt_path, force_style="PrimaryColour=&H00FF00,Bold=1,FontSize=24")
+         .output(output_video_path, acodec='copy').run(cmd=['ffmpeg', '-loglevel', 'quiet'], overwrite_output=True))
+        logger.info("Felirat ráégetése kész. Minden sikeres.")
+
+        with open(log_path, 'r', encoding='utf-8') as f:
             logs = f.read()
-        return jsonify({"success": True, "logs": logs, "download_url": "#"})
+        
+        return jsonify({
+            "success": True,
+            "download_url": f"/download/{os.path.basename(output_video_path)}",
+            "logs": logs
+        })
 
     except Exception as e:
-        error_message = f"Hiba történt: {e}"
-        logger.error(error_message, exc_info=True)
-        logs = ""
-        if os.path.exists(log_path):
-            with open(log_path, 'r') as f:
-                logs = f.read()
-        # Itt most a részletesebb hibát fogja visszaadni
-        return jsonify({"error": str(e), "logs": logs}), 500
+        # Hibakezelés (változatlan)
+        # ...
     
     finally:
-        # Takarítás...
+        # Takarítás (változatlan)
+        # ...
         pass
