@@ -29,46 +29,6 @@ TMP_DIR = "/tmp"
 def index():
     return send_from_directory('.', 'index.html')
 
-def get_speechmatics_srt(api_key, audio_file_path, language_code):
-    """Hangfájl közvetlen feltöltése a Speechmatics-hez és a leirat lekérése."""
-    url = "https://asr.api.speechmatics.com/v2/jobs/"
-    headers = {"Authorization": f"Bearer {api_key}"}
-    
-    config = {
-        "type": "transcription",
-        "transcription_config": {
-            "language": language_code,
-            "output_format": "srt"
-        }
-    }
-    
-    files = {
-        'config': (None, json.dumps(config), 'application/json'),
-        'data_file': (os.path.basename(audio_file_path), open(audio_file_path, 'rb'), 'audio/mpeg')
-    }
-    
-    print("Speechmatics job indítása fájlfeltöltéssel...")
-    response = requests.post(url, headers=headers, files=files)
-    response.raise_for_status()
-    job_id = response.json()['id']
-    print(f"Speechmatics job elküldve, ID: {job_id}")
-
-    while True:
-        status_response = requests.get(f"{url}{job_id}", headers=headers)
-        status_response.raise_for_status()
-        job_status = status_response.json()['job']['status']
-        print(f"Job státusz: {job_status}")
-        if job_status == "done":
-            break
-        if job_status in ["rejected", "failed"]:
-            raise Exception(f"Speechmatics job sikertelen: {status_response.json()}")
-        time.sleep(10)
-
-    print("SRT felirat lekérése...")
-    srt_response = requests.get(f"{url}{job_id}/transcript?format=srt", headers=headers)
-    srt_response.raise_for_status()
-    return srt_response.text
-
 @app.route('/process-video', methods=['POST'])
 def process_video():
     data = request.get_json()
@@ -80,76 +40,32 @@ def process_video():
     if not all([video_url, speechmatics_api_key, gemini_api_key, language]):
         return jsonify({"error": "Hiányzó adatok"}), 400
     
-    unique_id = str(uuid.uuid4())
-    # A kiterjesztés nélküli alapnév, a yt-dlp majd hozzáteszi a megfelelőt.
-    audio_base_path = os.path.join(TMP_DIR, f"{unique_id}_audio")
-    audio_path_final = audio_base_path + ".m4a" # A végleges fájl, amit a Speechmatics-nek adunk
-    
-    translated_srt_path = os.path.join(TMP_DIR, f"{unique_id}_translated.srt")
-    video_path = os.path.join(TMP_DIR, f"{unique_id}_video.mp4")
-    output_video_path = os.path.join(TMP_DIR, f"{unique_id}_output.mp4")
-    
-    try:
-        # 1. Lépés: Hang letöltése és konvertálása m4a formátumra
-        ydl_opts_audio = {
-            'format': 'bestaudio/best',
-            'outtmpl': audio_base_path,
-            'quiet': True,
-            # Utófeldolgozó, ami garantálja az m4a kimenetet
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'm4a',
-            }],
-        }
-        with yt_dlp.YoutubeDL(ydl_opts_audio) as ydl:
-            info = ydl.extract_info(video_url, download=True)
-            video_title = info.get('title', 'video')
-            safe_filename = "".join([c for c in video_title if c.isalpha() or c.isdigit() or c==' ']).rstrip() + ".mp4"
+    # Fájlnevek definiálása
+    # ...
 
-        # 2. Lépés: Átirat kérése a LETÖLTÖTT hangfájllal
-        original_srt_content = get_speechmatics_srt(speechmatics_api_key, audio_path_final, language)
+    try:
+        # 1. Lépés: Link és cím kinyerése
+        with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+            direct_url = info['url']
+            # ...
+
+        # 2. Lépés: Átirat kérése a Speechmatics-től
+        # IDE JÖN MAJD AZ ÚJ LOGIKA
+        original_srt_content = "Ez egy ideiglenes felirat." # Helykitöltő
 
         # 3. Lépés: Fordítás a Geminivel
-        genai.configure(api_key=gemini_api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        final_prompt = TRANSLATE_PROMPT_TEMPLATE.format(srt_content=original_srt_content)
-        gemini_response = model.generate_content(final_prompt)
-        translated_srt_content = gemini_response.text
-        
-        with open(translated_srt_path, "w", encoding="utf-8") as f:
-            f.write(translated_srt_content)
+        # ...
 
-        # 4. Lépés: A videó letöltése és a felirat ráégetése
-        # JAVÍTVA: Rugalmasabb formátumválasztó
-        ydl_opts_video = {
-            'format': 'bestvideo+bestaudio/best',
-            'outtmpl': video_path,
-            'quiet': True,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts_video) as ydl:
-            ydl.download([video_url])
+        # 4. Lépés: Felirat ráégetése
+        # ...
 
-        (
-            ffmpeg
-            .input(video_path)
-            .filter('subtitles', translated_srt_path, force_style="PrimaryColour=&H00FF00,Bold=1,FontSize=24")
-            .output(output_video_path, acodec='copy')
-            .run(cmd=['ffmpeg', '-loglevel', 'quiet'], overwrite_output=True)
-        )
-
-        return send_from_directory(
-            TMP_DIR,
-            os.path.basename(output_video_path),
-            as_attachment=True,
-            download_name=safe_filename
-        )
+        # Helykitöltő válasz, amíg a logika nincs kész
+        return jsonify({"message": "A végpont működik, de a feldolgozás még nincs implementálva."})
 
     except Exception as e:
         print(f"Hiba történt: {e}")
         return jsonify({"error": str(e)}), 500
     finally:
         # Takarítás
-        for f in [audio_path_final, translated_srt_path, video_path, output_video_path]:
-            if f and os.path.exists(f):
-                os.remove(f)
-
+        pass
