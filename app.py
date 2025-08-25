@@ -3,7 +3,6 @@ import uuid
 import time
 import requests
 import json
-import logging
 from flask import Flask, request, jsonify, send_from_directory
 import yt_dlp
 import google.generativeai as genai
@@ -13,8 +12,10 @@ import ffmpeg
 TRANSLATE_PROMPT_TEMPLATE = """
 Feladat: Fordítsd le a megadott SRT feliratot magyarra.
 A formátumot és az időbélyegeket pontosan tartsd meg, csak a szöveget fordítsd.
+
 Stílus: A fordítás legyen gördülékeny, természetes, és illeszkedjen a videó kontextusához.
 Használj bátran szleng szótárat, valamint trágár kifejezéseket. Ne szó szerint fordíts!
+
 Eredeti SRT felirat:
 ---
 {srt_content}
@@ -28,24 +29,25 @@ TMP_DIR = "/tmp"
 def index():
     return send_from_directory('.', 'index.html')
 
-# === ÚJ VÉGPONT: CSAK A FÁJLOK LETÖLTÉSÉRE ===
-@app.route('/download/<filename>')
-def download_file(filename):
-    return send_from_directory(TMP_DIR, filename, as_attachment=True)
-
 def get_speechmatics_srt(api_key, audio_file_path, language_code, logger):
-    """Hangfájl feltöltése a Speechmatics-hez és a leirat lekérése, logolással."""
+    """
+    Hangfájl közvetlen feltöltése a Speechmatics-hez és a leirat lekérése.
+    """
     url = "https://asr.api.speechmatics.com/v2/jobs/"
     headers = {"Authorization": f"Bearer {api_key}"}
     
     config = {
         "type": "transcription",
-        "transcription_config": { "language": language_code, "output_format": "srt" }
+        "transcription_config": {
+            "language": language_code,
+            "output_format": "srt"
+        }
     }
     
+    # JAVÍTÁS ITT TÖRTÉNT: 'audio/mpeg' -> 'audio/mp4'
     files = {
         'config': (None, json.dumps(config), 'application/json'),
-        'data_file': (os.path.basename(audio_file_path), open(audio_file_path, 'rb'), 'audio/mpeg')
+        'data_file': (os.path.basename(audio_file_path), open(audio_file_path, 'rb'), 'audio/mp4')
     }
     
     logger.info("Speechmatics job indítása fájlfeltöltéssel...")
@@ -85,17 +87,15 @@ def process_video():
     unique_id = str(uuid.uuid4())
     log_path = os.path.join(TMP_DIR, f"{unique_id}.log")
     
-    # === LOGOLÁS BEÁLLÍTÁSA ===
-    # Létrehozunk egy loggert, ami egyedi fájlba írja a folyamat lépéseit
     logger = logging.getLogger(unique_id)
     logger.setLevel(logging.INFO)
     handler = logging.FileHandler(log_path)
     formatter = logging.Formatter('%(asctime)s - %(message)s')
     handler.setFormatter(formatter)
-    if not logger.handlers:
-        logger.addHandler(handler)
+    if logger.hasHandlers():
+        logger.handlers.clear()
+    logger.addHandler(handler)
     
-    # Fájlnevek definiálása
     audio_base_path = os.path.join(TMP_DIR, f"{unique_id}_audio")
     audio_path_final = audio_base_path + ".m4a"
     translated_srt_path = os.path.join(TMP_DIR, f"{unique_id}_translated.srt")
@@ -105,7 +105,6 @@ def process_video():
     try:
         logger.info(f"Feldolgozás indult a következő URL-lel: {video_url}")
         
-        # 1. Lépés: Hangfájl letöltése
         logger.info("Hang letöltése indul...")
         ydl_opts_audio = {
             'format': 'bestaudio/best', 'outtmpl': audio_base_path, 'quiet': True,
@@ -117,10 +116,8 @@ def process_video():
             safe_filename = "".join([c for c in video_title if c.isalpha() or c.isdigit() or c==' ']).rstrip() + ".mp4"
         logger.info("Hang letöltése kész.")
 
-        # 2. Lépés: Átirat kérése
         original_srt_content = get_speechmatics_srt(speechmatics_api_key, audio_path_final, language, logger)
 
-        # 3. Lépés: Fordítás
         logger.info("Fordítás indítása a Geminivel...")
         genai.configure(api_key=gemini_api_key)
         model = genai.GenerativeModel('gemini-1.5-flash')
@@ -131,7 +128,6 @@ def process_video():
             f.write(translated_srt_content)
         logger.info("Fordítás kész.")
 
-        # 4. Lépés: Felirat ráégetése
         logger.info("Videó letöltése a felirat ráégetéséhez...")
         ydl_opts_video = {'format': 'bestvideo+bestaudio/best', 'outtmpl': video_path, 'quiet': True}
         with yt_dlp.YoutubeDL(ydl_opts_video) as ydl:
@@ -143,7 +139,6 @@ def process_video():
          .output(output_video_path, acodec='copy').run(cmd=['ffmpeg', '-loglevel', 'quiet'], overwrite_output=True))
         logger.info("Felirat ráégetése kész. Minden sikeres.")
 
-        # A folyamat végén beolvassuk a log fájl tartalmát
         with open(log_path, 'r') as f:
             logs = f.read()
         
@@ -155,15 +150,41 @@ def process_video():
 
     except Exception as e:
         error_message = f"Hiba történt: {e}"
-        logger.error(error_message)
-        with open(log_path, 'r') as f:
-            logs = f.read()
+        logger.error(error_message, exc_info=True)
+        logs = ""
+        if os.path.exists(log_path):
+            with open(log_path, 'r') as f:
+                logs = f.read()
         return jsonify({"error": str(e), "logs": logs}), 500
     
     finally:
-        # Takarítás
-        for f in [log_path, audio_path_final, translated_srt_path, video_path, output_video_path]:
-            # A kész videót egyelőre ne töröljük, mert le kell tölteni
-            if f != output_video_path and f and os.path.exists(f):
+        handler.close()
+        logger.removeHandler(handler)
+        files_to_clean = [log_path, audio_path_final, translated_srt_path, video_path]
+        # A kész videót egyelőre ne töröljük, mert le kell tölteni
+        if 'output_video_path' in locals() and os.path.exists(output_video_path):
+             pass # Don't clean the output file yet
+        
+        for f in files_to_clean:
+            if f and os.path.exists(f):
                 os.remove(f)
 
+# A letöltés utáni takarítást itt oldjuk meg
+@app.route('/download/<filename>')
+def download_file_and_cleanup(filename):
+    path = os.path.join(TMP_DIR, filename)
+    try:
+        # Fájl elküldése
+        response = send_from_directory(TMP_DIR, filename, as_attachment=True)
+        
+        # Ez a rész trükkös lehet a WSGI szerverek miatt,
+        # a legjobb, ha egy háttérfeladat takarítja a régi fájlokat,
+        # de egy egyszerűbb megoldás a @after_this_request
+        @response.call_on_close
+        def cleanup():
+            if os.path.exists(path):
+                os.remove(path)
+        
+        return response
+    except FileNotFoundError:
+        return "Fájl nem található", 404
