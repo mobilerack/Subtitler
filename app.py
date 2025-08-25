@@ -1,6 +1,7 @@
 import os
 import uuid
 import zipfile
+import logging
 from flask import Flask, request, jsonify, send_from_directory
 import yt_dlp
 import google.generativeai as genai
@@ -8,6 +9,20 @@ import ffmpeg
 
 app = Flask(__name__)
 TMP_DIR = "/tmp"
+
+# Gemini prompt
+TRANSLATE_PROMPT_TEMPLATE = """
+Feladat: Fordítsd le a megadott SRT feliratot magyarra.
+A formátumot és az időbélyegeket pontosan tartsd meg, csak a szöveget fordítsd.
+
+Stílus: A fordítás legyen gördülékeny, természetes, és illeszkedjen a videó kontextusához.
+Használj bátran szleng szótárat, valamint trágár kifejezéseket. Ne szó szerint fordíts!
+
+Eredeti SRT felirat:
+---
+{srt_content}
+---
+"""
 
 @app.route('/')
 def index():
@@ -30,31 +45,37 @@ def process_video():
     genai.configure(api_key=gemini_api_key)
     
     unique_id = str(uuid.uuid4())
+    # A kiterjesztés nélküli alapnév, a yt-dlp majd hozzáteszi a megfelelőt.
+    audio_base_path = os.path.join(TMP_DIR, f"{unique_id}_audio")
+    audio_path_final = audio_base_path + ".m4a" # A végleges hangfájl
     video_path = os.path.join(TMP_DIR, f"{unique_id}_video.mp4")
     srt_path = os.path.join(TMP_DIR, f"{unique_id}.srt")
     
     try:
-        # 1. LÉPÉS: Videó letöltése
-        ydl_opts = {
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-            'outtmpl': video_path,
+        # 1. LÉPÉS: Csak a hang letöltése és konvertálása
+        print("Hang letöltése és kinyerése...")
+        ydl_opts_audio = {
+            'format': 'bestaudio/best',
+            'outtmpl': audio_base_path,
             'quiet': True,
+            'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'm4a'}],
         }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([video_url])
+        with yt_dlp.YoutubeDL(ydl_opts_audio) as ydl:
+            info = ydl.extract_info(video_url, download=True)
+            video_title = info.get('title', 'video')
 
-        # 2. LÉPÉS: Videó feltöltése a Gemini Fájl API-ra
-        print("Videó feltöltése a Gemini-re...")
-        video_file = genai.upload_file(path=video_path)
+        # 2. LÉPÉS: A hangfájl feltöltése a Gemini Fájl API-ra
+        print("Hangfájl feltöltése a Gemini-re...")
+        audio_file = genai.upload_file(path=audio_path_final)
         
-        # 3. LÉPÉS: Leirat készítése a Geminivel
+        # 3. LÉPÉS: Leirat készítése a Geminivel a hangfájl alapján
         print("Leirat készítése...")
         model = genai.GenerativeModel('models/gemini-1.5-pro-latest')
-        prompt = "Készíts egy pontos, időbélyegzett SRT formátumú magyar feliratot ebből a videóból. A fordítás legyen gördülékeny, természetes, és illeszkedjen a videó kontextusához. Használj bátran szleng szótárat, valamint trágár kifejezéseket. Ne szó szerint fordíts!"
+        # A parancsot módosítjuk, hogy a hangfájlra hivatkozzon
+        prompt = "Készíts egy pontos, időbélyegzett SRT formátumú magyar feliratot ebből a hangfájlból. A fordítás legyen gördülékeny, természetes, és illeszkedjen a videó kontextusához. Használj bátran szleng szótárat, valamint trágár kifejezéseket. Ne szó szerint fordíts!"
         
-        response = model.generate_content([prompt, video_file])
+        response = model.generate_content([prompt, audio_file])
         
-        # A válaszban lévő SRT blokk kinyerése
         srt_content = response.text.strip()
         if "```srt" in srt_content:
              srt_content = srt_content.split("```srt")[1].split("```")[0].strip()
@@ -62,11 +83,22 @@ def process_video():
         with open(srt_path, "w", encoding="utf-8") as f:
             f.write(srt_content)
             
-        print("Leirat kész. Fájl törlése a Gemini szerveréről...")
-        genai.delete_file(video_file.name)
+        print("Leirat kész. Hangfájl törlése a Gemini szerveréről...")
+        genai.delete_file(audio_file.name)
 
+        # 4. LÉPÉS: A teljes videó letöltése
+        print("Videó letöltése a végső feldolgozáshoz...")
+        ydl_opts_video = {
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'outtmpl': video_path,
+            'quiet': True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts_video) as ydl:
+            ydl.download([video_url])
+
+        # 5. LÉPÉS: Kimenet előállítása a felhasználó választása alapján
         if burn_in:
-            # 4/A LÉPÉS: Felirat ráégetése
+            print("Felirat ráégetése...")
             output_video_path = os.path.join(TMP_DIR, f"{unique_id}_output.mp4")
             (ffmpeg.input(video_path)
              .filter('subtitles', srt_path, force_style="PrimaryColour=&H00FF00,Bold=1,FontSize=24")
@@ -78,7 +110,7 @@ def process_video():
                 "download_url": f"/download/{os.path.basename(output_video_path)}",
             })
         else:
-            # 4/B LÉPÉS: ZIP fájl készítése
+            print("ZIP fájl készítése...")
             zip_path = os.path.join(TMP_DIR, f"{unique_id}.zip")
             with zipfile.ZipFile(zip_path, 'w') as zipf:
                 zipf.write(video_path, os.path.basename(video_path))
@@ -95,5 +127,8 @@ def process_video():
         return jsonify({"error": str(e)}), 500
     finally:
         # A takarítás bonyolultabb, a letöltési végpont fogja kezelni.
-        pass
+        # Itt csak a már biztosan nem szükséges fájlokat töröljük.
+        for f in [audio_path_final]:
+             if os.path.exists(f):
+                  os.remove(f)
 
