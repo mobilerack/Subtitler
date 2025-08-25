@@ -9,8 +9,17 @@ import yt_dlp
 import google.generativeai as genai
 import ffmpeg
 
-# Gemini prompt (változatlan)
-TRANSLATE_PROMPT_TEMPLATE = """...""" # A prompt szövegét a rövidség kedvéért nem illesztem be újra
+# Gemini prompt
+TRANSLATE_PROMPT_TEMPLATE = """
+Feladat: Fordítsd le a megadott SRT feliratot magyarra.
+A formátumot és az időbélyegeket pontosan tartsd meg, csak a szöveget fordítsd.
+Stílus: A fordítás legyen gördülékeny, természetes, és illeszkedjen a videó kontextusához.
+Használj bátran szleng szótárat, valamint trágár kifejezéseket. Ne szó szerint fordíts!
+Eredeti SRT felirat:
+---
+{srt_content}
+---
+"""
 
 app = Flask(__name__)
 TMP_DIR = "/tmp"
@@ -21,7 +30,6 @@ def index():
 
 @app.route('/download/<filename>')
 def download_file(filename):
-    # Ez a végpont a kész, feliratozott videó letöltéséhez kell
     return send_from_directory(TMP_DIR, filename, as_attachment=True)
 
 def get_speechmatics_srt(api_key, file_path, language_code, logger):
@@ -37,9 +45,7 @@ def get_speechmatics_srt(api_key, file_path, language_code, logger):
         }
     }
     
-    # A fájltípus alapján automatikusan beállítjuk a MIME típust
     mime_type = 'video/mp4' if file_path.endswith('.mp4') else 'audio/mp4'
-    
     files = {
         'config': (None, json.dumps(config), 'application/json'),
         'data_file': (os.path.basename(file_path), open(file_path, 'rb'), mime_type)
@@ -88,9 +94,13 @@ def process_video():
     unique_id = str(uuid.uuid4())
     log_path = os.path.join(TMP_DIR, f"{unique_id}.log")
     
-    # Logolás beállítása... (változatlan)
     logger = logging.getLogger(unique_id)
-    # ...
+    logger.setLevel(logging.INFO)
+    handler = logging.FileHandler(log_path, encoding='utf-8')
+    formatter = logging.Formatter('%(asctime)s - %(message)s')
+    if logger.hasHandlers():
+        logger.handlers.clear()
+    logger.addHandler(handler)
     
     video_path = os.path.join(TMP_DIR, f"{unique_id}_video.mp4")
     translated_srt_path = os.path.join(TMP_DIR, f"{unique_id}_translated.srt")
@@ -99,7 +109,6 @@ def process_video():
     try:
         logger.info(f"Feldolgozás indult a következő URL-lel: {video_url}")
         
-        # 1. LÉPÉS: A videó letöltése (már nem kell külön a hang)
         logger.info("Videó letöltése indul...")
         ydl_opts_video = {
             'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
@@ -112,10 +121,8 @@ def process_video():
             safe_filename = "".join([c for c in video_title if c.isalpha() or c.isdigit() or c==' ']).rstrip() + ".mp4"
         logger.info("Videó letöltése kész.")
 
-        # 2. LÉPÉS: Átirat kérése a LETÖLTÖTT videófájllal
         original_srt_content = get_speechmatics_srt(speechmatics_api_key, video_path, language, logger)
 
-        # 3. LÉPÉS: Fordítás a Geminivel (változatlan)
         logger.info("Fordítás indítása a Geminivel...")
         genai.configure(api_key=gemini_api_key)
         model = genai.GenerativeModel('gemini-1.5-flash')
@@ -126,7 +133,6 @@ def process_video():
             f.write(translated_srt_content)
         logger.info("Fordítás kész.")
 
-        # 4. LÉPÉS: Felirat ráégetése (a videó már le van töltve)
         logger.info("Felirat ráégetése...")
         (ffmpeg.input(video_path).filter('subtitles', translated_srt_path, force_style="PrimaryColour=&H00FF00,Bold=1,FontSize=24")
          .output(output_video_path, acodec='copy').run(cmd=['ffmpeg', '-loglevel', 'quiet'], overwrite_output=True))
@@ -142,10 +148,25 @@ def process_video():
         })
 
     except Exception as e:
-        # Hibakezelés (változatlan)
-        # ...
+        # JAVÍTOTT HIBAKEZELŐ BLOKK
+        error_message = f"Hiba történt: {e}"
+        logger.error(error_message, exc_info=True)
+        logs = ""
+        if os.path.exists(log_path):
+            with open(log_path, 'r', encoding='utf-8') as f:
+                logs = f.read()
+        return jsonify({"error": str(e), "logs": logs}), 500
     
     finally:
-        # Takarítás (változatlan)
-        # ...
-        pass
+        # JAVÍTOTT TAKARÍTÓ BLOKK
+        handler.close()
+        logger.removeHandler(handler)
+        # Most már a kész videót is töröljük a letöltési végpont után
+        files_to_clean = [log_path, video_path, translated_srt_path]
+        for f in files_to_clean:
+            if f and os.path.exists(f):
+                try:
+                    os.remove(f)
+                except OSError as e:
+                    print(f"Hiba a fájl törlésekor {f}: {e}")
+
