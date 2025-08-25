@@ -14,10 +14,8 @@ TMP_DIR = "/tmp"
 TRANSLATE_PROMPT_TEMPLATE = """
 Feladat: Fordítsd le a megadott SRT feliratot magyarra.
 A formátumot és az időbélyegeket pontosan tartsd meg, csak a szöveget fordítsd.
-
 Stílus: A fordítás legyen gördülékeny, természetes, és illeszkedjen a videó kontextusához.
 Használj bátran szleng szótárat, valamint trágár kifejezéseket. Ne szó szerint fordíts!
-
 Eredeti SRT felirat:
 ---
 {srt_content}
@@ -30,6 +28,7 @@ def index():
 
 @app.route('/download/<path:filename>')
 def download_file(filename):
+    # Ezt a végpontot a kész fájlok letöltéséhez használjuk
     return send_from_directory(TMP_DIR, filename, as_attachment=True)
 
 @app.route('/process-video', methods=['POST'])
@@ -45,9 +44,8 @@ def process_video():
     genai.configure(api_key=gemini_api_key)
     
     unique_id = str(uuid.uuid4())
-    # A kiterjesztés nélküli alapnév, a yt-dlp majd hozzáteszi a megfelelőt.
     audio_base_path = os.path.join(TMP_DIR, f"{unique_id}_audio")
-    audio_path_final = audio_base_path + ".m4a" # A végleges hangfájl
+    audio_path_final = audio_base_path + ".m4a"
     video_path = os.path.join(TMP_DIR, f"{unique_id}_video.mp4")
     srt_path = os.path.join(TMP_DIR, f"{unique_id}.srt")
     
@@ -64,14 +62,16 @@ def process_video():
             info = ydl.extract_info(video_url, download=True)
             video_title = info.get('title', 'video')
 
-        # 2. LÉPÉS: A hangfájl feltöltése a Gemini Fájl API-ra
+        # 2. LÉPÉS: A hangfájl feltöltése a Gemini Fájl API-ra (JAVÍTVA)
         print("Hangfájl feltöltése a Gemini-re...")
-        audio_file = genai.upload_file(path=audio_path_final)
+        audio_file = genai.upload_file(
+            path=audio_path_final,
+            mime_type="audio/mp4" # Ezzel a sorral egészítettük ki
+        )
         
         # 3. LÉPÉS: Leirat készítése a Geminivel a hangfájl alapján
         print("Leirat készítése...")
         model = genai.GenerativeModel('models/gemini-1.5-pro-latest')
-        # A parancsot módosítjuk, hogy a hangfájlra hivatkozzon
         prompt = "Készíts egy pontos, időbélyegzett SRT formátumú magyar feliratot ebből a hangfájlból. A fordítás legyen gördülékeny, természetes, és illeszkedjen a videó kontextusához. Használj bátran szleng szótárat, valamint trágár kifejezéseket. Ne szó szerint fordíts!"
         
         response = model.generate_content([prompt, audio_file])
@@ -126,9 +126,9 @@ def process_video():
         print(f"Hiba történt: {e}")
         return jsonify({"error": str(e)}), 500
     finally:
-        # A takarítás bonyolultabb, a letöltési végpont fogja kezelni.
-        # Itt csak a már biztosan nem szükséges fájlokat töröljük.
-        for f in [audio_path_final]:
+        # Takarítás
+        files_to_clean = [audio_path_final, video_path, srt_path]
+        for f in files_to_clean:
              if os.path.exists(f):
                   os.remove(f)
 
