@@ -1,134 +1,78 @@
 <!DOCTYPE html>
 <html lang="hu">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Videó Feliratozó (Gemini 1.5)</title>
-    <link href="https://vjs.zencdn.net/8.10.0/video-js.css" rel="stylesheet" />
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; background-color: #f5f5f7; color: #1d1d1f; margin: 0; padding: 20px; }
-        .container { max-width: 800px; margin: 0 auto; padding: 20px; background: #fff; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
-        h1 { font-size: 24px; }
-        .input-group { margin-bottom: 15px; }
-        label { display: block; font-weight: 600; margin-bottom: 5px; }
-        input[type="text"], input[type="password"] { width: 100%; padding: 10px; font-size: 16px; border-radius: 8px; border: 1px solid #d2d2d7; box-sizing: border-box; background-color: white; }
-        button { display: inline-block; padding: 10px 20px; font-size: 16px; cursor: pointer; border: none; border-radius: 8px; font-weight: 600; }
-        #processBtn { background-color: #007aff; color: white; width: 100%; }
-        #processBtn:disabled { background-color: #a0a0a0; }
-        #status { margin-top: 15px; padding: 10px; background-color: #e8e8e8; border-radius: 8px; display: none; }
-        .checkbox-group { display: flex; align-items: center; gap: 10px; }
-        #player-container { display: none; margin-top: 20px; }
-    </style>
-</head>
+    </head>
 <body>
     <div class="container">
         <h1>Videó Feliratozó (Gemini 1.5)</h1>
         
-        <div class="input-group">
-            <label for="geminiApiKeyInput">Google Gemini API Kulcs</label>
-            <input type="password" id="geminiApiKeyInput" placeholder="A Google AI Studio API kulcsod">
-        </div>
-
-        <div class="input-group">
-            <label for="videoUrlInput">Videó URL</label>
-            <input type="text" id="videoUrlInput" placeholder="https://www.youtube.com/watch?v=...">
-        </div>
-        
-        <div class="input-group checkbox-group">
-            <input type="checkbox" id="burnInCheckbox">
-            <label for="burnInCheckbox">Felirat ráégetése (lassabb)</label>
-        </div>
-
-        <button id="processBtn">Feldolgozás</button>
-        <div id="status"></div>
-
         <div id="player-container">
-            <video id="my-video" class="video-js" controls preload="auto" width="100%" height="auto"></video>
-            <a id="downloadLink" href="#" style="display: none; margin-top: 10px; text-decoration: none; background-color: #34c759; color: white; padding: 10px 15px; border-radius: 8px; text-align: center;" download>Letöltés</a>
-        </div>
+            </div>
 
+        <div id="log-container">
+            <label for="log-output">Szerver Log (Valós Idejű)</label>
+            <textarea id="log-output" readonly></textarea>
+        </div>
     </div>
 
     <script src="https://vjs.zencdn.net/8.10.0/video.min.js"></script>
     <script>
-        const geminiApiKeyInput = document.getElementById('geminiApiKeyInput');
-        const videoUrlInput = document.getElementById('videoUrlInput');
-        const burnInCheckbox = document.getElementById('burnInCheckbox');
         const processBtn = document.getElementById('processBtn');
-        const statusDiv = document.getElementById('status');
+        const logOutput = document.getElementById('log-output');
         const playerContainer = document.getElementById('player-container');
         const downloadLink = document.getElementById('downloadLink');
         const player = videojs('my-video');
-
-        document.addEventListener('DOMContentLoaded', () => { 
-            const savedGeminiKey = localStorage.getItem('geminiApiKey');
-            if (savedGeminiKey) geminiApiKeyInput.value = savedGeminiKey;
-        });
-        geminiApiKeyInput.addEventListener('input', () => { 
-            localStorage.setItem('geminiApiKey', geminiApiKeyInput.value);
-        });
+        // ... többi elem definíciója
 
         processBtn.addEventListener('click', async () => {
-            const geminiApiKey = geminiApiKeyInput.value;
-            const url = videoUrlInput.value;
-            const burnIn = burnInCheckbox.checked;
+            // ... bemeneti adatok összegyűjtése (API kulcs, URL, stb.) ...
 
-            if (!geminiApiKey || !url) { 
-                alert('Kérlek, add meg az API kulcsot és a videó URL-t is!');
-                return;
-            }
-
-            // === ÚJ FIGYELMEZTETŐ ABLAK ===
-            const userConfirmed = confirm("Az API hívás költségekkel járhat. Biztosan folytatod?");
-            if (!userConfirmed) {
-                return; // Ha a felhasználó a "Mégse"-re kattint, nem csinálunk semmit.
-            }
-            // =============================
-
-            statusDiv.style.display = 'block';
-            statusDiv.textContent = 'Feldolgozás indul... Ez a videó méretétől függően sokáig tarthat.';
+            // === ÚJ LOGIKA KEZDETE ===
+            logOutput.value = '';
             processBtn.disabled = true;
             playerContainer.style.display = 'none';
-            downloadLink.style.display = 'none';
 
-            try {
-                const response = await fetch('/process-video', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        url: url, geminiApiKey: geminiApiKey, burnIn: burnIn
-                    }),
-                });
-                
-                const data = await response.json();
-                if (!response.ok) { throw new Error(data.error || 'Ismeretlen hiba a szerveren.'); }
+            // 1. Elindítjuk a feldolgozást és kapunk egy job_id-t
+            const startResponse = await fetch('/process-video', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ /* ... adatok ... */ }),
+            });
+            const startData = await startResponse.json();
+            const jobId = startData.job_id;
 
-                statusDiv.textContent = 'Feldolgozás sikeres!';
-                playerContainer.style.display = 'block'; // Mostantól látható lesz a lejátszó
+            // 2. Feliratkozunk a log csatornára
+            const eventSource = new EventSource(`/stream-logs/${jobId}`);
+            logOutput.value = "Kapcsolódva a log stream-hez...\n";
 
-                if (burnIn) {
-                    player.src({ type: 'video/mp4', src: data.video_url });
-                    player.reset(); 
-                } else {
-                    player.src({ type: 'video/mp4', src: data.video_url });
-                    player.reset();
-                    player.addRemoteTextTrack({
-                        kind: 'subtitles',
-                        src: data.srt_url,
-                        srclang: 'hu',
-                        label: 'Magyar',
-                        default: true
-                    }, false);
-                }
+            // 3. Figyeljük a bejövő üzeneteket
+            eventSource.onmessage = function(event) {
+                logOutput.value += event.data + "\n";
+                // Automatikus görgetés az aljára
+                logOutput.scrollTop = logOutput.scrollHeight;
+            };
 
-                downloadLink.href = data.download_url;
-                downloadLink.style.display = 'block';
-
-            } catch (error) {
-                statusDiv.textContent = `Hiba: ${error.message}`;
-            } finally {
+            // 4. Figyeljük a speciális 'result' eseményt, ami a végét jelzi
+            eventSource.addEventListener('result', function(event) {
+                eventSource.close(); // Lezárjuk a kapcsolatot
                 processBtn.disabled = false;
-            }
+                
+                const resultData = JSON.parse(event.data);
+
+                if (resultData.status === 'success') {
+                    playerContainer.style.display = 'block';
+                    // ... lejátszó és letöltési link beállítása a resultData alapján ...
+                } else {
+                    logOutput.value += `\nHIBA: ${resultData.message}\n`;
+                }
+            });
+
+            // Hibakezelés
+            eventSource.onerror = function() {
+                logOutput.value += "\nHiba a log stream kapcsolatban. A kapcsolat lezárult.\n";
+                eventSource.close();
+                processBtn.disabled = false;
+            };
         });
     </script>
 </body>
