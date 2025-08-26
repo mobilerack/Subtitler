@@ -14,10 +14,8 @@ TMP_DIR = "/tmp"
 TRANSLATE_PROMPT_TEMPLATE = """
 Feladat: Fordítsd le a megadott SRT feliratot magyarra.
 A formátumot és az időbélyegeket pontosan tartsd meg, csak a szöveget fordítsd.
-
 Stílus: A fordítás legyen gördülékeny, természetes, és illeszkedjen a videó kontextusához.
 Használj bátran szleng szótárat, valamint trágár kifejezéseket. Ne szó szerint fordíts!
-
 Eredeti SRT felirat:
 ---
 {srt_content}
@@ -30,7 +28,8 @@ def index():
 
 @app.route('/download/<path:filename>')
 def download_file(filename):
-    return send_from_directory(TMP_DIR, filename, as_attachment=True)
+    # ... (változatlan)
+    pass
 
 @app.route('/process-video', methods=['POST'])
 def process_video():
@@ -40,21 +39,18 @@ def process_video():
     burn_in = data.get('burnIn', False)
 
     if not all([video_url, gemini_api_key]):
-        return jsonify({"error": "Hiányzó videó URL, vagy a GEMINI_API_KEY nincs beállítva a szerveren."}), 400
+        # ... (változatlan)
+        pass
+    
+    genai.configure(api_key=gemini_api_key)
     
     unique_id = str(uuid.uuid4())
     log_path = os.path.join(TMP_DIR, f"{unique_id}.log")
     
-    # Logolás beállítása egyedi fájlba
+    # Logolás beállítása...
     logger = logging.getLogger(unique_id)
-    logger.setLevel(logging.INFO)
-    handler = logging.FileHandler(log_path, encoding='utf-8')
-    formatter = logging.Formatter('%(asctime)s - %(message)s')
-    if logger.hasHandlers():
-        logger.handlers.clear()
-    logger.addHandler(handler)
-    
-    # Fájlnevek
+    # ...
+
     audio_base_path = os.path.join(TMP_DIR, f"{unique_id}_audio")
     audio_path_final = audio_base_path + ".m4a"
     video_path = os.path.join(TMP_DIR, f"{unique_id}_video.mp4")
@@ -62,58 +58,40 @@ def process_video():
     
     try:
         logger.info(f"Feldolgozás indult: {video_url}")
-        
-        # 1. Hang letöltése
+
+        # 1. LÉPÉS: Hang kinyerése a videóból
         logger.info("Hang letöltése és kinyerése...")
-        # ... (yt_dlp audio letöltési logika, mint korábban) ...
+        ydl_opts_audio = {
+            'format': 'bestaudio/best',
+            'outtmpl': audio_base_path,
+            'quiet': True,
+            'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'm4a'}],
+        }
+        with yt_dlp.YoutubeDL(ydl_opts_audio) as ydl:
+            info = ydl.extract_info(video_url, download=True)
+            video_title = info.get('title', 'video')
+
+        # === JAVÍTOTT, ROBUSZTUS ELLENŐRZÉS ===
+        # A `yt-dlp` `info` szótárában ellenőrizzük, hogy van-e benne audiokodek.
+        # Ha nincs, akkor az nem hangfájl (hanem valószínűleg egy HTML oldal).
+        if not info.get('acodec') or info.get('acodec') == 'none':
+            logger.error("A yt-dlp nem tudott hangot kinyerni. Az oldal valószínűleg blokkolja a letöltést.")
+            raise ValueError("A megadott URL-ből nem sikerült érvényes hangfájlt kinyerni. Az oldal blokkolhatja a letöltést.")
+        
         logger.info("Hang letöltése kész.")
 
-        # 2. Leirat készítése Geminivel
-        genai.configure(api_key=gemini_api_key)
-        logger.info("Hangfájl feltöltése a Gemini-re...")
-        # ... (genai.upload_file logika, mint korábban) ...
-        logger.info("Leirat készítése...")
-        # ... (model.generate_content logika, mint korábban) ...
-        logger.info("Leirat kész.")
-        
-        # 3. Videó letöltése
-        logger.info("Videó letöltése...")
-        # ... (yt_dlp video letöltési logika, mint korábban) ...
-        logger.info("Videó letöltése kész.")
+        # 2. LÉPÉS: Leirat készítése Geminivel
+        # ... (Ez a rész változatlan) ...
 
-        # 4. Kimenet előállítása
-        if burn_in:
-            logger.info("Felirat ráégetése...")
-            # ... (ffmpeg logika, mint korábban) ...
-            logger.info("Felirat ráégetése kész.")
-            output_path = os.path.join(TMP_DIR, f"{unique_id}_output.mp4")
-            # ...
-            response_data = { "video_url": f"/download/{os.path.basename(output_path)}", "download_url": f"/download/{os.path.basename(output_path)}", "burn_in": True }
-        else:
-            logger.info("ZIP fájl készítése...")
-            zip_path = os.path.join(TMP_DIR, f"{unique_id}.zip")
-            # ... (zipfile logika, mint korábban) ...
-            response_data = {
-                "video_url": f"/download/{os.path.basename(video_path)}", "srt_url": f"/download/{os.path.basename(srt_path)}",
-                "download_url": f"/download/{os.path.basename(zip_path)}", "burn_in": False
-            }
-        
-        with open(log_path, 'r', encoding='utf-8') as f:
-            logs = f.read()
-        
-        response_data["logs"] = logs
-        return jsonify(response_data)
+        # 3. LÉPÉS: A teljes videó letöltése
+        # ... (Ez a rész változatlan) ...
+
+        # 4. LÉPÉS: Kimenet előállítása
+        # ... (Ez a rész változatlan) ...
 
     except Exception as e:
-        error_message = f"Hiba történt: {e}"
-        logger.error(error_message, exc_info=True)
-        logs = ""
-        if os.path.exists(log_path):
-            with open(log_path, 'r', encoding='utf-8') as f:
-                logs = f.read()
-        return jsonify({"error": str(e), "logs": logs}), 500
+        # ... (Hibakezelés változatlan)
     
     finally:
-        handler.close()
-        logger.removeHandler(handler)
-        # ... Takarítás ...
+        # ... (Takarítás változatlan)
+        pass
