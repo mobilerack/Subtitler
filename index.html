@@ -18,6 +18,8 @@
         #status { margin-top: 15px; padding: 10px; background-color: #e8e8e8; border-radius: 8px; display: none; }
         .checkbox-group { display: flex; align-items: center; gap: 10px; }
         #player-container { display: none; margin-top: 20px; }
+        #log-container { margin-top: 20px; }
+        #log-output { display: block; width: 100%; height: 300px; background-color: #1d1d1f; color: #34c759; font-family: "SF Mono", "Menlo", "Consolas", monospace; font-size: 12px; border: 1px solid #d2d2d7; border-radius: 8px; box-sizing: border-box; white-space: pre-wrap; word-wrap: break-word; overflow-y: scroll; }
     </style>
 </head>
 <body>
@@ -28,12 +30,10 @@
             <label for="geminiApiKeyInput">Google Gemini API Kulcs</label>
             <input type="password" id="geminiApiKeyInput" placeholder="A Google AI Studio API kulcsod">
         </div>
-
         <div class="input-group">
             <label for="videoUrlInput">Videó URL</label>
             <input type="text" id="videoUrlInput" placeholder="https://www.youtube.com/watch?v=...">
         </div>
-        
         <div class="input-group checkbox-group">
             <input type="checkbox" id="burnInCheckbox">
             <label for="burnInCheckbox">Felirat ráégetése (lassabb)</label>
@@ -47,6 +47,10 @@
             <a id="downloadLink" href="#" style="display: none; margin-top: 10px; text-decoration: none; background-color: #34c759; color: white; padding: 10px 15px; border-radius: 8px; text-align: center;" download>Letöltés</a>
         </div>
 
+        <div id="log-container">
+            <label for="log-output">Szerver Log (Valós Idejű)</label>
+            <textarea id="log-output" readonly></textarea>
+        </div>
     </div>
 
     <script src="https://vjs.zencdn.net/8.10.0/video.min.js"></script>
@@ -56,15 +60,16 @@
         const burnInCheckbox = document.getElementById('burnInCheckbox');
         const processBtn = document.getElementById('processBtn');
         const statusDiv = document.getElementById('status');
+        const logOutput = document.getElementById('log-output');
         const playerContainer = document.getElementById('player-container');
         const downloadLink = document.getElementById('downloadLink');
         const player = videojs('my-video');
 
-        document.addEventListener('DOMContentLoaded', () => { 
+        document.addEventListener('DOMContentLoaded', () => {
             const savedGeminiKey = localStorage.getItem('geminiApiKey');
             if (savedGeminiKey) geminiApiKeyInput.value = savedGeminiKey;
         });
-        geminiApiKeyInput.addEventListener('input', () => { 
+        geminiApiKeyInput.addEventListener('input', () => {
             localStorage.setItem('geminiApiKey', geminiApiKeyInput.value);
         });
 
@@ -73,60 +78,86 @@
             const url = videoUrlInput.value;
             const burnIn = burnInCheckbox.checked;
 
-            if (!geminiApiKey || !url) { 
+            if (!geminiApiKey || !url) {
                 alert('Kérlek, add meg az API kulcsot és a videó URL-t is!');
                 return;
             }
-
-            // === ÚJ FIGYELMEZTETŐ ABLAK ===
+            
             const userConfirmed = confirm("Az API hívás költségekkel járhat. Biztosan folytatod?");
-            if (!userConfirmed) {
-                return; // Ha a felhasználó a "Mégse"-re kattint, nem csinálunk semmit.
-            }
-            // =============================
+            if (!userConfirmed) { return; }
 
             statusDiv.style.display = 'block';
-            statusDiv.textContent = 'Feldolgozás indul... Ez a videó méretétől függően sokáig tarthat.';
+            statusDiv.textContent = 'Feldolgozás indul...';
+            logOutput.value = '';
             processBtn.disabled = true;
             playerContainer.style.display = 'none';
             downloadLink.style.display = 'none';
 
             try {
-                const response = await fetch('/process-video', {
+                const startResponse = await fetch('/process-video', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        url: url, geminiApiKey: geminiApiKey, burnIn: burnIn
-                    }),
+                    body: JSON.stringify({ url: url, geminiApiKey: geminiApiKey, burnIn: burnIn }),
                 });
-                
-                const data = await response.json();
-                if (!response.ok) { throw new Error(data.error || 'Ismeretlen hiba a szerveren.'); }
 
-                statusDiv.textContent = 'Feldolgozás sikeres!';
-                playerContainer.style.display = 'block'; // Mostantól látható lesz a lejátszó
-
-                if (burnIn) {
-                    player.src({ type: 'video/mp4', src: data.video_url });
-                    player.reset(); 
-                } else {
-                    player.src({ type: 'video/mp4', src: data.video_url });
-                    player.reset();
-                    player.addRemoteTextTrack({
-                        kind: 'subtitles',
-                        src: data.srt_url,
-                        srclang: 'hu',
-                        label: 'Magyar',
-                        default: true
-                    }, false);
+                if (!startResponse.ok) {
+                    const errorData = await startResponse.json();
+                    throw new Error(errorData.error || "A szerver nem tudta elindítani a feladatot.");
                 }
 
-                downloadLink.href = data.download_url;
-                downloadLink.style.display = 'block';
+                const startData = await startResponse.json();
+                const jobId = startData.job_id;
+
+                const eventSource = new EventSource(`/stream-logs/${jobId}`);
+                logOutput.value = "Kapcsolódva a log stream-hez...\n";
+
+                eventSource.onmessage = function(event) {
+                    logOutput.value += event.data + "\n";
+                    logOutput.scrollTop = logOutput.scrollHeight;
+                };
+
+                eventSource.addEventListener('result', function(event) {
+                    eventSource.close();
+                    processBtn.disabled = false;
+                    
+                    const resultData = JSON.parse(event.data);
+
+                    if (resultData.status === 'success') {
+                        statusDiv.textContent = 'Feldolgozás sikeres!';
+                        playerContainer.style.display = 'block';
+                        downloadLink.style.display = 'block';
+                        
+                        // === A HIÁNYZÓ LOGIKA ITT VAN BEILLESZTVE ===
+                        player.reset();
+                        if (resultData.burn_in) {
+                            player.src({ type: 'video/mp4', src: resultData.video_url });
+                        } else {
+                            player.src({ type: 'video/mp4', src: resultData.video_url });
+                            player.addRemoteTextTrack({
+                                kind: 'subtitles',
+                                src: resultData.srt_url,
+                                srclang: 'hu',
+                                label: 'Magyar',
+                                default: true
+                            }, false);
+                        }
+                        downloadLink.href = resultData.download_url;
+                        // ===========================================
+                    } else {
+                        statusDiv.textContent = 'Hiba a feldolgozás során!';
+                        logOutput.value += `\nHIBA: ${resultData.message}\n`;
+                    }
+                });
+
+                eventSource.onerror = function() {
+                    logOutput.value += "\nHiba a log stream kapcsolatban. A kapcsolat lezárult.\n";
+                    eventSource.close();
+                    processBtn.disabled = false;
+                    statusDiv.textContent = 'Hiba a szerverkapcsolatban.';
+                };
 
             } catch (error) {
                 statusDiv.textContent = `Hiba: ${error.message}`;
-            } finally {
                 processBtn.disabled = false;
             }
         });
