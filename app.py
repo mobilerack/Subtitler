@@ -65,7 +65,7 @@ def process_task(job_id, video_url, gemini_api_key, burn_in):
         audio_file = genai.upload_file(path=audio_path_final, mime_type="audio/mp4")
         
         logger.info("Leirat készítése...")
-        model = genai.GenerativeModel('models/gemini-1.5-pro-latest')
+        model = genai.GenerativeModel('models/gemini-1.5-flash-latest')
         prompt = "Készíts egy pontos, időbélyegzett SRT formátumú magyar feliratot ebből a hangfájlból. A fordítás legyen gördülékeny, természetes, és illeszkedjen a videó kontextusához. Használj bátran szleng szótárat, valamint trágár kifejezéseket. Ne szó szerint fordíts!"
         response = model.generate_content([prompt, audio_file])
         srt_content = response.text.strip()
